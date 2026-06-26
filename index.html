@@ -553,6 +553,22 @@ function promisify(request) {
   });
 }
 
+// Wait for BOTH the request and the transaction to complete
+// This fixes the classic IndexedDB bug where data isn't visible after "save"
+function txDone(store) {
+  return new Promise((resolve, reject) => {
+    const t = store.transaction;
+    t.oncomplete = resolve;
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error || new Error('Transaction aborted'));
+  });
+}
+async function txCommit(store, op) {
+  const result = await promisify(op(store));
+  await txDone(store);
+  return result;
+}
+
 /* ===== Experiment CRUD ===== */
 async function getAllExperiments() {
   return promisify(tx('experiments').getAll());
@@ -566,17 +582,17 @@ async function saveExperiment(exp) {
   const now = Date.now();
   if (!exp.createdAt) exp.createdAt = now;
   exp.updatedAt = now;
-  return promisify(tx('experiments', 'readwrite').put(exp));
+  return txCommit(tx('experiments', 'readwrite'), s => s.put(exp));
 }
 
 async function deleteExperiment(id) {
-  // Delete all attachments first
   const atts = await getAttachments(id);
-  const t = tx('attachments', 'readwrite');
-  for (const a of atts) t.delete(a.id);
-  await promisify(t.transaction);
-  // Delete experiment
-  await promisify(tx('experiments', 'readwrite').delete(id));
+  if (atts.length) {
+    const s = tx('attachments', 'readwrite');
+    for (const a of atts) s.delete(a.id);
+    await txDone(s);
+  }
+  await txCommit(tx('experiments', 'readwrite'), s => s.delete(id));
 }
 
 /* ===== Attachment CRUD ===== */
@@ -599,11 +615,11 @@ function revokeAllBlobUrls() {
 
 async function saveAttachment(att) {
   att.uploadedAt = Date.now();
-  return promisify(tx('attachments', 'readwrite').put(att));
+  return txCommit(tx('attachments', 'readwrite'), s => s.put(att));
 }
 
 async function deleteAttachment(id) {
-  return promisify(tx('attachments', 'readwrite').delete(id));
+  return txCommit(tx('attachments', 'readwrite'), s => s.delete(id));
 }
 
 async function getAttachment(id) {
