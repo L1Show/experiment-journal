@@ -593,6 +593,9 @@ async function deleteExperiment(id) {
     await txDone(s);
   }
   await txCommit(tx('experiments', 'readwrite'), s => s.delete(id));
+  // Verify deletion succeeded
+  const check = await promisify(tx('experiments').get(id));
+  if (check) throw new Error('记录删除验证失败');
 }
 
 /* ===== Attachment CRUD ===== */
@@ -892,11 +895,16 @@ async function saveCurrent() {
 async function deleteCurrent() {
   if (!selectedId) return;
   if (!confirm('确定要删除该实验及其所有附件吗？此操作不可撤销。')) return;
-  await deleteExperiment(selectedId);
-  selectedId = null;
-  await refresh();
-  renderDetail(null);
-  showToast('已删除');
+  try {
+    await deleteExperiment(selectedId);
+    selectedId = null;
+    await refresh();
+    renderDetail(null);
+    showToast('✅ 已删除');
+  } catch (err) {
+    console.error('Delete error:', err);
+    showToast('❌ 删除失败，请刷新页面后重试');
+  }
 }
 
 async function handleFiles(files) {
