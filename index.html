@@ -651,44 +651,39 @@ async function exportToWord(){
     var ar=await sb.from("attachments").select("*");
     var allAtts=ar.error?[]:ar.data;
 
-    var h='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><style>body{font-family:"Microsoft YaHei",sans-serif;padding:40px;line-height:1.8}h1{text-align:center;font-size:22px}h2{font-size:16px;margin-top:20px}p{margin:4px 0;font-size:14px}.label{font-weight:bold}.sep{color:#ccc;text-align:center;margin:16px 0}img{max-width:100%;height:auto;margin:8px 0}</style></head><body>';
-    h+='<h1>实验记录</h1><p style="text-align:center;color:#888;font-size:12px">导出日期: '+new Date().toISOString().split("T")[0]+'</p>';
+    var h='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]--><style>@page{size:A4;margin:2cm}body{font-family:"Microsoft YaHei","SimSun",sans-serif;font-size:14px;line-height:1.8;color:#333}h1{text-align:center;font-size:24px;border-bottom:2px solid #2b6cb0;padding-bottom:12px;margin-bottom:8px}h2{font-size:16px;color:#2b6cb0;margin:24px 0 8px 0;padding:6px 0;border-bottom:1px solid #ddd}.meta{color:#888;font-size:12px;margin-bottom:12px}.section{margin:10px 0 10px 20px}.section .lbl{font-weight:bold;color:#2b6cb0}.divider{text-align:center;color:#ccc;border:none;border-top:1px dashed #ddd;margin:30px 0;page-break-before:always}.img-box{margin:12px 0;text-align:center}.img-box img{max-width:500px;height:auto;border:1px solid #eee;padding:4px}.img-box .cap{font-size:11px;color:#888;margin-top:4px}.attach{font-size:13px;color:#666;margin:2px 0 2px 20px}</style></head><body>';
+    h+='<h1>实验记录</h1><p style="text-align:center;color:#888;font-size:12px;margin-bottom:30px">导出日期: '+new Date().toISOString().split("T")[0]+'</p>';
 
     for(var i=0;i<exps.length;i++){
       var e=exps[i],d=e.date||"";
       if(typeof d==="string"&&d.indexOf("T")>=0)d=d.split("T")[0];
-      h+='<div class="sep">─────────────────────</div>';
+      if(i>0)h+='<hr class="divider">';
       h+='<h2>'+(i+1)+'. '+esc(e.title||"未命名实验")+'</h2>';
-      h+='<p style="color:#666;font-size:12px">日期: '+d+' | 分类: '+esc(e.category||"无")+'</p>';
-      if(e.objective)h+=field("实验目的",e.objective);
-      if(e.process)h+=field("实验流程与条件",e.process);
-      if(e.results)h+=field("实验结果与数据",e.results);
-      if(e.conclusion)h+=field("结论与备注",e.conclusion);
+      h+='<p class="meta">📅 '+d+' &nbsp;|&nbsp; 🏷 '+esc(e.category||"无")+'</p>';
+      if(e.objective)h+=fld("实验目的",e.objective);
+      if(e.process)h+=fld("实验流程与条件",e.process);
+      if(e.results)h+=fld("实验结果与数据",e.results);
+      if(e.conclusion)h+=fld("结论与备注",e.conclusion);
 
       var atts=allAtts.filter(function(a){return a.experiment_id===e.id});
-      if(atts.length){
-        h+='<p><span class="label">附件：</span></p>';
-        for(var j=0;j<atts.length;j++){
-          var att=atts[j],url=fileUrl(att.storage_path);
-          if(att.type&&att.type.indexOf("image/")===0){
-            try{var imgResp=await fetch(url);var blob=await imgResp.blob();var b64=await blobToBase64(blob);h+='<p>'+esc(att.name)+'</p><img src="'+b64+'" style="max-width:600px">'}catch(ex){h+='<p>'+esc(att.name)+' (图片加载失败)</p>'}
-          }else{h+='<p>📎 '+esc(att.name)+' ('+(att.size/1024).toFixed(0)+' KB)</p>'}
-        }
+      for(var j=0;j<atts.length;j++){
+        var att=atts[j],url=fileUrl(att.storage_path);
+        if(att.type&&att.type.indexOf("image/")===0){
+          try{var imgResp=await fetch(url);var blob=await imgResp.blob();var b64=await blobToBase64(blob);h+='<div class="img-box"><img src="'+b64+'"><div class="cap">'+esc(att.name)+'</div></div>'}catch(ex){h+='<p class="attach">📷 '+esc(att.name)+' (加载失败)</p>'}
+        }else{h+='<p class="attach">📎 '+esc(att.name)+' ('+(att.size/1024).toFixed(0)+' KB)</p>'}
       }
     }
     h+='</body></html>';
 
     var blob=new Blob(["﻿"+h],{type:"application/msword;charset=utf-8"});
     var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="实验记录.doc";a.click();
-    showToast("✅ 已导出: 实验记录.doc");
+    showToast("✅ 已导出");
   }catch(e){console.error(e);showToast("❌ 导出失败: "+e.message)}
 }
 
 function blobToBase64(blob){return new Promise(function(resolve){var r=new FileReader();r.onload=function(){resolve(r.result)};r.readAsDataURL(blob)})}
 
-function field(label,text){
-  return '<p><span class="label">'+esc(label)+'：</span>'+esc(text)+'</p>';
-}
+function fld(lbl,txt){return'<div class="section"><span class="lbl">'+esc(lbl)+'：</span>'+esc(txt)+'</div>'}
 
 /* Init */
 if(!window.supabase){document.getElementById("expList").innerHTML='<div style="text-align:center;padding:40px;color:var(--danger)">⚠️ 加载失败<br><small>CDN 未加载，请刷新</small></div>'}else{reload()}
