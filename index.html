@@ -537,7 +537,7 @@ async function reload(){
   _loading=false;renderAll();
 }
 
-function fileUrl(path){return sb.storage.from("attachments").getPublicUrl(path).data.publicUrl}
+function fileUrl(path){return SUPABASE_URL+'/storage/v1/object/public/attachments/'+path}
 function esc(s){var d=document.createElement("div");d.textContent=s||"";return d.innerHTML}
 function escAttr(s){return(s||"").replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
 function fi(t){if(!t)return"📄";if(t.indexOf("pdf")>=0)return"📑";if(t.indexOf("text")>=0||t.indexOf("json")>=0||t.indexOf("xml")>=0)return"📝";if(t.indexOf("video")>=0)return"🎬";if(t.indexOf("audio")>=0)return"🎵";return"📄"}
