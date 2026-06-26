@@ -1,0 +1,19 @@
+{
+  "experiments": [
+    {
+      "id": 1,
+      "title": "",
+      "date": "2026-06-26",
+      "category": "",
+      "objective": "",
+      "process": "",
+      "results": "",
+      "conclusion": "",
+      "created_at": 1782481888809,
+      "updated_at": 1782481888809
+    }
+  ],
+  "attachments": [],
+  "next_exp_id": 2,
+  "next_att_id": 1
+}
