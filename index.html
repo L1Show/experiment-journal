@@ -617,8 +617,9 @@ async function deleteCurrent(){
 
 async function handleFiles(files){
   if(!selectedId){showToast("请先选择实验");return}if(!files.length)return;
-  for(var i=0;i<files.length;i++){var f=files[i];try{var path=selectedId+"/"+Date.now()+"_"+f.name;var ur=await sb.storage.from("attachments").upload(path,f,{cacheControl:"3600",upsert:false});if(!ur.error){await sb.from("attachments").insert({experiment_id:selectedId,name:f.name,type:f.type,size:f.size,storage_path:path})}}catch(e){}}
-  showToast("✅ 已上传 "+files.length+" 个");
+  var ok=0,errs=[];
+  for(var i=0;i<files.length;i++){var f=files[i];try{var path=selectedId+"/"+Date.now()+"_"+f.name;var ur=await sb.storage.from("attachments").upload(path,f,{cacheControl:"3600",upsert:false});if(ur.error){errs.push(f.name+": "+ur.error.message)}else{var ir=await sb.from("attachments").insert({experiment_id:selectedId,name:f.name,type:f.type,size:f.size,storage_path:path});if(ir.error)errs.push(f.name+": insert failed");else ok++}}catch(e){errs.push(f.name+": "+e.message)}}
+  if(ok)showToast("✅ 已上传 "+ok+" 个");if(errs.length)showToast("❌ "+errs.join(", "));
   var atts=[];try{var r=await sb.from("attachments").select("*").eq("experiment_id",selectedId).order("uploaded_at",{ascending:false});if(!r.error)atts=r.data}catch(e){}
   var g=document.getElementById("fileGrid");if(g)g.innerHTML=renderFileCards(atts);
 }
@@ -647,7 +648,10 @@ async function exportToWord(){
     var exps=r.data;
     if(!exps.length){showToast("暂无实验数据可导出");return}
 
-    var h='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><style>body{font-family:"Microsoft YaHei",sans-serif;padding:40px;line-height:1.8}h1{text-align:center;font-size:22px}h2{font-size:16px;margin-top:20px}p{margin:4px 0;font-size:14px}.label{font-weight:bold}.sep{color:#ccc;text-align:center;margin:16px 0}</style></head><body>';
+    var ar=await sb.from("attachments").select("*");
+    var allAtts=ar.error?[]:ar.data;
+
+    var h='<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><style>body{font-family:"Microsoft YaHei",sans-serif;padding:40px;line-height:1.8}h1{text-align:center;font-size:22px}h2{font-size:16px;margin-top:20px}p{margin:4px 0;font-size:14px}.label{font-weight:bold}.sep{color:#ccc;text-align:center;margin:16px 0}img{max-width:100%;height:auto;margin:8px 0}</style></head><body>';
     h+='<h1>实验记录</h1><p style="text-align:center;color:#888;font-size:12px">导出日期: '+new Date().toISOString().split("T")[0]+'</p>';
 
     for(var i=0;i<exps.length;i++){
@@ -660,14 +664,27 @@ async function exportToWord(){
       if(e.process)h+=field("实验流程与条件",e.process);
       if(e.results)h+=field("实验结果与数据",e.results);
       if(e.conclusion)h+=field("结论与备注",e.conclusion);
+
+      var atts=allAtts.filter(function(a){return a.experiment_id===e.id});
+      if(atts.length){
+        h+='<p><span class="label">附件：</span></p>';
+        for(var j=0;j<atts.length;j++){
+          var att=atts[j],url=fileUrl(att.storage_path);
+          if(att.type&&att.type.indexOf("image/")===0){
+            try{var imgResp=await fetch(url);var blob=await imgResp.blob();var b64=await blobToBase64(blob);h+='<p>'+esc(att.name)+'</p><img src="'+b64+'" style="max-width:600px">'}catch(ex){h+='<p>'+esc(att.name)+' (图片加载失败)</p>'}
+          }else{h+='<p>📎 '+esc(att.name)+' ('+(att.size/1024).toFixed(0)+' KB)</p>'}
+        }
+      }
     }
     h+='</body></html>';
 
     var blob=new Blob(["﻿"+h],{type:"application/msword;charset=utf-8"});
     var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="实验记录.doc";a.click();
     showToast("✅ 已导出: 实验记录.doc");
-  }catch(e){console.error(e);showToast("❌ 导出失败")}
+  }catch(e){console.error(e);showToast("❌ 导出失败: "+e.message)}
 }
+
+function blobToBase64(blob){return new Promise(function(resolve){var r=new FileReader();r.onload=function(){resolve(r.result)};r.readAsDataURL(blob)})}
 
 function field(label,text){
   return '<p><span class="label">'+esc(label)+'：</span>'+esc(text)+'</p>';
