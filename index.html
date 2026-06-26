@@ -518,6 +518,7 @@ body {
 <!-- Preview Modal -->
 <div id="previewModal" class="modal-overlay" style="display:none;" onclick="closeModal(event)"></div>
 
+<script src="https://unpkg.com/docx@8/build/index.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 /* Supabase Sync v4 */
@@ -631,6 +632,50 @@ function closeModal(e){if(e&&e.target!==document.getElementById("previewModal"))
 function filterByTag(t){currentFilter=t;selectedId=null;renderDetail(null);renderSidebar()}
 document.getElementById("searchInput").addEventListener("input",function(){renderSidebar()});
 document.addEventListener("keydown",function(e){if((e.ctrlKey||e.metaKey)&&e.key==="s"){e.preventDefault();if(selectedId)saveCurrent()}if(e.key==="Escape"){document.getElementById("previewModal").style.display="none"}});
+
+
+/* ===== Export ===== */
+async function exportToWord(){
+  showToast("正在生成文档…");
+  try{
+    var r=await sb.from("experiments").select("*").order("updated_at",{ascending:false});
+    if(r.error)throw r.error;
+    var exps=r.data;
+    if(!exps.length){showToast("暂无实验数据可导出");return}
+
+    var doc=window.docx;
+    var children=[
+      new doc.Paragraph({heading:"Heading1",children:[new doc.TextRun("实验记录")],alignment:doc.AlignmentType.CENTER}),
+      new doc.Paragraph({children:[new doc.TextRun({text:"导出日期: "+new Date().toISOString().split("T")[0],size:20,color:"888888"})],alignment:doc.AlignmentType.CENTER,spacing:{after:400}})
+    ];
+
+    for(var i=0;i<exps.length;i++){
+      var e=exps[i];
+      var d=e.date||"";if(typeof d==="string"&&d.indexOf("T")>=0)d=d.split("T")[0];
+      children.push(new doc.Paragraph({children:[new doc.TextRun({text:"─────────────────────",color:"cccccc",size:16})],spacing:{before:200,after:200}}));
+      children.push(new doc.Paragraph({heading:"Heading2",children:[new doc.TextRun((i+1)+". "+(e.title||"未命名实验"))]}));
+      children.push(new doc.Paragraph({children:[new doc.TextRun({text:"日期: "+d+"    分类: "+(e.category||"无"),size:20,color:"666666"})],spacing:{after:200}}));
+      if(e.objective)children.push(para("实验目的",e.objective));
+      if(e.process)children.push(para("实验流程与条件",e.process));
+      if(e.results)children.push(para("实验结果与数据",e.results));
+      if(e.conclusion)children.push(para("结论与备注",e.conclusion));
+    }
+
+    var sec={children:children};
+    doc.Packer.toBlob(doc.Document.create({sections:[sec]})).then(function(blob){
+      var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="实验记录.docx";a.click();
+      showToast("✅ 已导出: 实验记录.docx");
+    });
+  }catch(e){console.error(e);showToast("❌ 导出失败")}
+}
+
+function para(label,text){
+  var doc=window.docx;
+  return new doc.Paragraph({
+    children:[new doc.TextRun({text:label+": ",bold:true,size:21}),new doc.TextRun({text:text,size:21})],
+    spacing:{after:100}
+  });
+}
 
 /* Init */
 if(!window.supabase){document.getElementById("expList").innerHTML='<div style="text-align:center;padding:40px;color:var(--danger)">⚠️ 加载失败<br><small>CDN 未加载，请刷新</small></div>'}else{reload()}
