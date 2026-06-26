@@ -520,41 +520,23 @@ body {
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-/* ===== Supabase Sync ===== */
+/* Supabase Sync v4 */
 var SUPABASE_URL="https://dacwwmcfrkeeonjxyelr.supabase.co";
 var SUPABASE_KEY="sb_publishable_urA7ERfwuRaJN3QoITnf7Q_fj0RFTAq";
 var sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
-var experiments=[],selectedId=null,currentFilter="全部";
+var experiments=[],selectedId=null,currentFilter="全部",_loading=false;
 
-async function loadData(){
-  try{
-    var r=await sb.from("experiments").select("*").order("updated_at",{ascending:false});
-    if(!r.error)experiments=r.data;
-  }catch(e){}
-  renderAll();
-}
-
-async function saveExperiment(exp){
-  var now=new Date().toISOString();if(!exp.created_at)exp.created_at=now;exp.updated_at=now;
-  var r=await sb.from("experiments").upsert(exp).select();if(r.error)throw r.error;return r.data[0];
-}
-
-async function getAttachments(expId){
-  var r=await sb.from("attachments").select("*").eq("experiment_id",expId).order("uploaded_at",{ascending:false});
-  if(r.error)return[];return r.data;
-}
-
-async function uploadFile(file,expId){
-  var path=expId+"/"+Date.now()+"_"+file.name;
-  var r=await sb.storage.from("attachments").upload(path,file,{cacheControl:"3600",upsert:false});
-  if(r.error)throw r.error;
-  return{path:path};
+async function reload(){
+  if(_loading)return;_loading=true;
+  try{var r=await sb.from("experiments").select("*").order("updated_at",{ascending:false});if(!r.error)experiments=r.data}catch(e){}
+  _loading=false;renderAll();
 }
 
 function fileUrl(path){return sb.storage.from("attachments").getPublicUrl(path).data.publicUrl}
-
 function esc(s){var d=document.createElement("div");d.textContent=s||"";return d.innerHTML}
 function escAttr(s){return(s||"").replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function fi(t){if(!t)return"📄";if(t.indexOf("pdf")>=0)return"📑";if(t.indexOf("text")>=0||t.indexOf("json")>=0||t.indexOf("xml")>=0)return"📝";if(t.indexOf("video")>=0)return"🎬";if(t.indexOf("audio")>=0)return"🎵";return"📄"}
+function isCode(n){var x=["txt","md","json","csv","xml","html","css","js","ts","py","yaml","yml","log","cfg","ini","sh","bat"];return x.indexOf((n||"").split(".").pop().toLowerCase())>=0}
 
 function showToast(msg){
   var t=document.createElement("div");t.textContent=msg;
@@ -568,32 +550,35 @@ function renderAll(){
 }
 
 function renderSidebar(){
-  var l=document.getElementById("expList"),c=document.getElementById("expCount"),f=document.getElementById("tagFilter"),tags=new Set();experiments.forEach(function(e){if(e.category)tags.add(e.category)});
+  var l=document.getElementById("expList"),c=document.getElementById("expCount"),f=document.getElementById("tagFilter");
+  var tags={};experiments.forEach(function(e){if(e.category)tags[e.category]=true});
   var s=(document.getElementById("searchInput").value||"").toLowerCase(),fl=experiments;
   if(currentFilter!=="全部")fl=fl.filter(function(e){return e.category===currentFilter});
   if(s)fl=fl.filter(function(e){return(e.title||"").toLowerCase().indexOf(s)>=0||(e.category||"").toLowerCase().indexOf(s)>=0||(e.objective||"").toLowerCase().indexOf(s)>=0});
-  var tagsArr=[];tags.forEach(function(t){tagsArr.push(t)});
-  f.innerHTML=["全部"].concat(tagsArr).map(function(t){return'<span class="tag-chip'+(t===currentFilter?' active':'')+'" onclick="filterByTag(\''+t.replace(/'/g,"\\\\'")+'\')">'+t+'</span>'}).join("");
+  var tArr=["全部"];for(var k in tags)tArr.push(k);
+  f.innerHTML=tArr.map(function(t){return'<span class="tag-chip'+(t===currentFilter?' active':'')+'" onclick="filterByTag(\''+t.replace(/'/g,"\\\\'")+'\')\">'+t+'</span>'}).join("");
   c.textContent=experiments.length+" 条记录";
   if(!fl.length){l.innerHTML='<div style="text-align:center;padding:30px;color:var(--text-muted);font-size:13px">暂无实验记录</div>';return}
-  l.innerHTML=fl.map(function(e){var d=new Date(e.date||e.created_at),ds=isNaN(d)?"":d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");return'<div class="exp-card'+(e.id===selectedId?' selected':'')+'" onclick="selectExp('+e.id+')"><div class="card-title">'+esc(e.title||"未命名实验")+'</div><div class="card-meta"><span>'+ds+'</span></div>'+(e.category?'<span class="card-tag">'+esc(e.category)+'</span>':'')+'</div>'}).join("");
+  l.innerHTML=fl.map(function(e){var d=e.date?new Date(e.date+"T00:00:00"):new Date(e.created_at),ds=isNaN(d.getTime())?"":d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");return'<div class="exp-card'+(e.id===selectedId?' selected':'')+'" onclick="selectExp('+e.id+')"><div class="card-title">'+esc(e.title||"未命名实验")+'</div><div class="card-meta"><span>'+ds+'</span></div>'+(e.category?'<span class="card-tag">'+esc(e.category)+'</span>':'')+'</div>'}).join("");
 }
 
 async function selectExp(id){
-  selectedId=id;var e=experiments.find(function(x){return x.id===id}),atts=[];
-  if(e){try{atts=await getAttachments(e.id)}catch(err){}}
+  selectedId=id;var e=experiments.find(function(x){return x.id===id});
+  if(!e){renderDetail(null);return}
+  var atts=[];try{var r=await sb.from("attachments").select("*").eq("experiment_id",id).order("uploaded_at",{ascending:false});if(!r.error)atts=r.data}catch(err){}
   renderDetail(e,atts);renderSidebar();
 }
 
 function renderDetail(exp,atts){
-  var em=document.getElementById("emptyState"),pn=document.getElementById("detailPanel");if(!exp){em.style.display="flex";pn.style.display="none";return}
+  var em=document.getElementById("emptyState"),pn=document.getElementById("detailPanel");
+  if(!exp){em.style.display="flex";pn.style.display="none";return}
   em.style.display="none";pn.style.display="block";atts=atts||[];
-  var d=exp.date?new Date(exp.date):new Date(exp.created_at),dv=isNaN(d)?"":d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+  var d=exp.date?new Date(exp.date+"T00:00:00"):new Date(exp.created_at),dv=isNaN(d.getTime())?"":d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
   pn.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px"><h2 style="font-size:22px;font-weight:700">实验详情</h2><div class="form-actions" style="padding:0"><button class="btn primary" onclick="saveCurrent()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>保存</button><button class="btn danger" onclick="deleteCurrent()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>删除</button></div></div><div class="form-row"><div class="form-group"><label>实验标题</label><input type="text" id="fTitle" value="'+escAttr(exp.title||'')+'" placeholder="例如：溶胶-凝胶法合成TiO₂纳米颗粒"></div><div class="form-group"><label>实验日期</label><input type="date" id="fDate" value="'+dv+'"></div></div><div class="form-group"><label>实验分类</label><input type="text" id="fCategory" value="'+escAttr(exp.category||'')+'" placeholder="例如：合成、XRD表征、EIS测试、SEM…"></div><div class="form-group"><label>实验目的</label><textarea id="fObjective" rows="2" placeholder="描述本次实验的目标…">'+esc(exp.objective||'')+'</textarea></div><div class="form-group"><label>实验流程与条件</label><textarea id="fProcess" rows="6" placeholder="记录实验步骤、反应条件（温度、时间、配比等）…">'+esc(exp.process||'')+'</textarea></div><div class="form-group"><label>实验结果与数据</label><textarea id="fResults" rows="5" placeholder="记录实验结果、XRD图谱分析、EIS数据、SEM观察等…">'+esc(exp.results||'')+'</textarea></div><div class="form-group"><label>结论与备注</label><textarea id="fConclusion" rows="3" placeholder="实验结论、改进方向、注意事项…">'+esc(exp.conclusion||'')+'</textarea></div><div class="attachments-section"><h3 style="font-size:14px;font-weight:600;margin-bottom:12px">📎 附件文件</h3><div class="drop-zone" id="dropZone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><p>拖拽文件到此处，或 <span>点击上传</span></p><input type="file" id="fileInput" multiple style="display:none" onchange="handleFiles(this.files)"></div><div class="file-grid" id="fileGrid">'+renderFileCards(atts)+'</div></div>';
   setTimeout(function(){
     var dz=document.getElementById("dropZone"),fi=document.getElementById("fileInput");
     if(dz){dz.onclick=function(){fi.click()};dz.ondragover=function(e){e.preventDefault();dz.classList.add("dragover")};dz.ondragleave=function(){dz.classList.remove("dragover")};dz.ondrop=function(e){e.preventDefault();dz.classList.remove("dragover");handleFiles(e.dataTransfer.files)}}
-  },50);
+  },100);
 }
 
 function renderFileCards(atts){
@@ -601,52 +586,54 @@ function renderFileCards(atts){
   return atts.map(function(a){var isImg=a.type&&a.type.indexOf("image/")===0,sz=a.size>1048576?(a.size/1048576).toFixed(1)+" MB":(a.size/1024).toFixed(0)+" KB",u=a.storage_path?fileUrl(a.storage_path):"#";return'<div class="file-card" onclick="previewAtt(\"'+a.id+'\")"><div class="file-icon-wrap">'+(isImg?'<img src="'+u+'" alt="'+esc(a.name)+'" loading="lazy">':'<span class="file-type-icon">'+fi(a.type)+'</span>')+'</div><div class="file-name" title="'+esc(a.name)+'">'+esc(a.name)+'</div><div class="file-size">'+sz+'</div><div class="file-actions" onclick="event.stopPropagation()"><button onclick="previewAtt(\"'+a.id+'\")">预览</button><button onclick="downloadAtt(\"'+a.id+'\")">下载</button><button class="del-btn" onclick="removeAttachment('+a.id+')">删除</button></div></div>'}).join("");
 }
 
-function fi(t){if(!t)return"📄";if(t.indexOf("pdf")>=0)return"📑";if(t.indexOf("text")>=0||t.indexOf("json")>=0||t.indexOf("xml")>=0)return"📝";if(t.indexOf("video")>=0)return"🎬";if(t.indexOf("audio")>=0)return"🎵";return"📄"}
-
-/* ===== Actions (optimistic - UI first, save later) ===== */
+/* Operations - save then reload */
 async function createNew(){
   var exp={title:"",date:new Date().toISOString().split("T")[0],category:"",objective:"",process:"",results:"",conclusion:"",created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
   experiments.unshift(exp);selectedId=exp.id;renderAll();
-  try{var saved=await saveExperiment(exp);exp.id=saved.id;exp.created_at=saved.created_at;selectedId=saved.id;renderAll()}catch(e){experiments=experiments.filter(function(x){return x!==exp});selectedId=null;renderAll();showToast("❌ 新建失败")}
+  try{var saved=await sb.from("experiments").insert(exp).select().single();if(!saved.error&&saved.data){exp.id=saved.data.id;selectedId=saved.data.id}}
+  catch(e){}
+  await reload();
 }
 
 async function saveCurrent(){
   if(!selectedId)return;var exp=experiments.find(function(e){return e.id===selectedId});if(!exp)return;
-  exp.title=document.getElementById("fTitle").value.trim();exp.date=document.getElementById("fDate").value;exp.category=document.getElementById("fCategory").value.trim();exp.objective=document.getElementById("fObjective").value.trim();exp.process=document.getElementById("fProcess").value.trim();exp.results=document.getElementById("fResults").value.trim();exp.conclusion=document.getElementById("fConclusion").value.trim();
-  try{await saveExperiment(exp)}catch(e){}
-  showToast("✅ 保存成功");
+  exp.title=document.getElementById("fTitle").value.trim();exp.date=document.getElementById("fDate").value;exp.category=document.getElementById("fCategory").value.trim();exp.objective=document.getElementById("fObjective").value.trim();exp.process=document.getElementById("fProcess").value.trim();exp.results=document.getElementById("fResults").value.trim();exp.conclusion=document.getElementById("fConclusion").value.trim();exp.updated_at=new Date().toISOString();
+  try{await sb.from("experiments").upsert(exp)}catch(e){}
+  showToast("✅ 已保存");
+  await reload();
 }
 
 async function deleteCurrent(){
   if(!selectedId)return;if(!confirm("确定删除？"))return;
-  var id=selectedId;selectedId=null;renderDetail(null);experiments=experiments.filter(function(e){return e.id!==id});renderSidebar();
-  try{await sb.from("experiments").delete().eq("id",id)}catch(e){}
-  showToast("✅ 已删除");
+  try{await sb.from("experiments").delete().eq("id",selectedId)}catch(e){}
+  selectedId=null;renderDetail(null);showToast("✅ 已删除");
+  await reload();
 }
 
 async function handleFiles(files){
   if(!selectedId){showToast("请先选择实验");return}if(!files.length)return;
-  for(var i=0;i<files.length;i++){var f=files[i];try{var r=await uploadFile(f,selectedId);await sb.from("attachments").insert({experiment_id:selectedId,name:f.name,type:f.type,size:f.size,storage_path:r.path})}catch(e){showToast("❌ "+f.name+" 失败")}}
-  var atts=await getAttachments(selectedId);var g=document.getElementById("fileGrid");if(g)g.innerHTML=renderFileCards(atts);showToast("✅ 已上传 "+files.length+" 个")
+  for(var i=0;i<files.length;i++){var f=files[i];try{var path=selectedId+"/"+Date.now()+"_"+f.name;var ur=await sb.storage.from("attachments").upload(path,f,{cacheControl:"3600",upsert:false});if(!ur.error){await sb.from("attachments").insert({experiment_id:selectedId,name:f.name,type:f.type,size:f.size,storage_path:path})}}catch(e){}}
+  showToast("✅ 已上传 "+files.length+" 个");
+  var atts=[];try{var r=await sb.from("attachments").select("*").eq("experiment_id",selectedId).order("uploaded_at",{ascending:false});if(!r.error)atts=r.data}catch(e){}
+  var g=document.getElementById("fileGrid");if(g)g.innerHTML=renderFileCards(atts);
 }
 
-async function removeAttachment(id){if(!confirm("确定删除？"))return;await sb.from("attachments").delete().eq("id",id);var atts=await getAttachments(selectedId);var g=document.getElementById("fileGrid");if(g)g.innerHTML=renderFileCards(atts);showToast("已删除")}
+async function removeAttachment(id){if(!confirm("确定删除？"))return;try{var ar=await sb.from("attachments").select("*").eq("id",id).single();if(ar.data){await sb.storage.from("attachments").remove([ar.data.storage_path]);await sb.from("attachments").delete().eq("id",id)}}catch(e){};var atts=[];try{var r=await sb.from("attachments").select("*").eq("experiment_id",selectedId).order("uploaded_at",{ascending:false});if(!r.error)atts=r.data}catch(e){};var g=document.getElementById("fileGrid");if(g)g.innerHTML=renderFileCards(atts);showToast("已删除")}
 
 async function previewAtt(id){
-  var r=await sb.from("attachments").select("*").eq("id",id).single();if(r.error||!r.data)return;var a=r.data,u=fileUrl(a.storage_path),t=a.type||"",ov=document.getElementById("previewModal"),b="";
+  var ar=await sb.from("attachments").select("*").eq("id",id).single();if(ar.error||!ar.data)return;var a=ar.data,u=fileUrl(a.storage_path),t=a.type||"",ov=document.getElementById("previewModal"),b="";
   if(t.indexOf("image/")===0)b='<img src="'+u+'" alt="'+esc(a.name)+'">';else if(t.indexOf("video/")===0)b='<video src="'+u+'" controls autoplay></video>';else if(t.indexOf("audio/")===0)b='<audio src="'+u+'" controls autoplay></audio>';else if(t==="application/pdf")b='<iframe src="'+u+'" style="width:85vw;height:85vh"></iframe>';else if(t.indexOf("text/")===0||isCode(a.name)){try{var rx=await fetch(u);b='<pre>'+esc((await rx.text()).slice(0,500000))+'</pre>'}catch(ex){b='<div class="file-info"><p>无法加载</p></div>'}}else b='<div class="file-info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p style="font-size:16px;font-weight:500">'+esc(a.name)+'</p><p style="font-size:13px">'+((a.size||0)/1024).toFixed(1)+' KB</p><a href="'+u+'" download class="download-btn">⬇ 下载</a></div>';
   ov.innerHTML='<div class="modal" onclick="event.stopPropagation()"><div class="modal-header"><h3>'+esc(a.name)+'</h3><button onclick="closeModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div><div class="modal-body">'+b+'</div></div>';ov.style.display="flex";
 }
 
-function downloadAtt(id){sb.from("attachments").select("*").eq("id",id).single().then(function(r){if(r.data)window.open(fileUrl(r.data.storage_path),"_blank")});}
+function downloadAtt(id){sb.from("attachments").select("*").eq("id",id).single().then(function(r){if(r.data)window.open(fileUrl(r.data.storage_path),"_blank")})}
 function closeModal(e){if(e&&e.target!==document.getElementById("previewModal"))return;document.getElementById("previewModal").style.display="none"}
-function isCode(n){return["txt","md","json","csv","xml","html","css","js","ts","py","yaml","yml","log","cfg","ini","sh","bat"].indexOf((n||"").split(".").pop().toLowerCase())>=0}
 function filterByTag(t){currentFilter=t;selectedId=null;renderDetail(null);renderSidebar()}
-
 document.getElementById("searchInput").addEventListener("input",function(){renderSidebar()});
 document.addEventListener("keydown",function(e){if((e.ctrlKey||e.metaKey)&&e.key==="s"){e.preventDefault();if(selectedId)saveCurrent()}if(e.key==="Escape"){document.getElementById("previewModal").style.display="none"}});
 
-loadData();
+/* Init */
+if(!window.supabase){document.getElementById("expList").innerHTML='<div style="text-align:center;padding:40px;color:var(--danger)">⚠️ 加载失败<br><small>CDN 未加载，请刷新</small></div>'}else{reload()}
 
 </script>
 </body>
