@@ -870,12 +870,26 @@ function showToast(msg) {
 }
 
 /* ===== Setup ===== */
-function saveSetup() {
+async function saveSetup() {
   const token = document.getElementById('tokenInput').value.trim();
   if (!token) { showToast('请输入 Token'); return; }
   setToken(token);
-  document.getElementById('setupOverlay').style.display = 'none';
-  loadData();
+
+  // Show loading state
+  const btn = document.querySelector('.setup-box .btn');
+  btn.textContent = '正在同步数据…';
+  btn.disabled = true;
+
+  try {
+    await loadData();
+    document.getElementById('setupOverlay').style.display = 'none';
+    showToast('✅ 连接成功！开始记录实验吧');
+  } catch(err) {
+    document.getElementById('setupOverlay').style.display = 'flex';
+    btn.textContent = '保存并开始使用';
+    btn.disabled = false;
+    showToast('❌ 连接失败：' + (err.message || '网络错误'));
+  }
 }
 
 function showSettings() {
