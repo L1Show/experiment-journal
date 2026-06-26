@@ -454,32 +454,14 @@ async function saveAllData(msg) {
     setStatus('已同步', false);
   } catch(err) {
     if (err.message === 'CONFLICT') {
-      // Conflict - reload and retry
       setStatus('冲突，重新同步…', true);
-      const fresh = await fetchData();
-      // Merge: keep our new/changed experiments, use fresh for unchanged ones
-      const freshIds = new Set(fresh.experiments.map(e => e.id));
-      const ourNew = data.experiments.filter(e => !freshIds.has(e.id));
-      // For existing experiments, use our version (more recent edits)
-      const merged = fresh.experiments.map(e => {
-        const ours = data.experiments.find(o => o.id === e.id);
-        return (ours && ours.updated_at >= e.updated_at) ? ours : e;
-      });
-      ourNew.forEach(e => merged.push(e));
-      data.experiments = merged;
-      data.attachments = [...fresh.attachments, ...data.attachments.filter(a => !fresh.attachments.some(fa => fa.id === a.id))];
-      data.next_exp_id = Math.max(data.next_exp_id, fresh.next_exp_id);
-      data.next_att_id = Math.max(data.next_att_id, fresh.next_att_id);
-      try {
-        await saveData(data, msg);
-        setStatus('已同步', false);
-      } catch(e2) {
-        setStatus('⚠ 同步失败，请刷新', false);
-        console.error(e2);
-      }
+      await loadData();
+      setStatus('请重试操作', false);
+      showToast('⚠ 数据已刷新，请重新操作');
     } else {
       setStatus('⚠ 保存失败: ' + err.message, false);
       console.error(err);
+      showToast('❌ 保存失败，请刷新重试');
     }
   }
   renderAll();
@@ -703,23 +685,52 @@ async function saveCurrent() {
 async function deleteCurrent() {
   if (!selectedId) return;
   if (!confirm('确定删除该实验及其所有附件吗？此操作不可撤销。')) return;
+  setStatus('删除中…', true);
 
+  // Always fetch the latest data first to avoid conflicts
   try {
+    const fresh = await fetchData();
+    const targetAtts = (fresh.attachments || []).filter(a => a.experiment_id === selectedId);
+
     // Delete attachment files from GitHub
-    const atts = data.attachments.filter(a => a.experiment_id === selectedId);
-    for (const a of atts) {
-      try { await deleteGitHubFile(a.path, '删除附件'); } catch(e) { console.warn('删除文件失败:', a.path, e); }
+    for (const a of targetAtts) {
+      try { await deleteGitHubFile(a.path, '删除附件'); } catch(e) {}
     }
 
-    // Remove from local data
-    data.attachments = data.attachments.filter(a => a.experiment_id !== selectedId);
-    data.experiments = data.experiments.filter(e => e.id !== selectedId);
-    selectedId = null;
+    // Remove from data
+    fresh.attachments = fresh.attachments.filter(a => a.experiment_id !== selectedId);
+    fresh.experiments = fresh.experiments.filter(e => e.id !== selectedId);
 
-    await saveAllData('删除实验');
+    // Save with retry on conflict
+    let saved = false;
+    for (let attempt = 0; attempt < 3 && !saved; attempt++) {
+      try {
+        await saveData(fresh, '删除实验');
+        saved = true;
+      } catch(err) {
+        if (err.message === 'CONFLICT' && attempt < 2) {
+          const retryFresh = await fetchData();
+          retryFresh.attachments = retryFresh.attachments.filter(a => a.experiment_id !== selectedId);
+          retryFresh.experiments = retryFresh.experiments.filter(e => e.id !== selectedId);
+          Object.assign(fresh, retryFresh);
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    data = fresh;
+    selectedId = null;
+    renderAll();
     renderDetail(null);
+    setStatus('已同步', false);
     showToast('✅ 已删除');
   } catch(err) {
+    console.error('Delete error:', err);
+    setStatus('⚠ 删除失败', false);
+    showToast('❌ 删除失败，请刷新页面后重试');
+  }
+} catch(err) {
     console.error('Delete error:', err);
     showToast('❌ 删除失败，请重试');
   }
