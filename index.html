@@ -464,6 +464,21 @@ body {
   text-decoration: none;
 }
 
+/* ===== Sync: Status Bar & Setup ===== */
+.status-bar{position:fixed;top:8px;left:50%;transform:translateX(-50%);background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:6px 16px;font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;z-index:200;box-shadow:var(--shadow-sm);transition:opacity .3s;pointer-events:none}
+.status-dot{width:6px;height:6px;border-radius:50%}
+.status-dot.synced{background:#48bb78}
+.status-dot.syncing{background:#ecc94b;animation:pulse .8s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.setup-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;display:flex;align-items:center;justify-content:center}
+.setup-box{background:var(--surface);padding:40px;border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);max-width:440px;width:90%;text-align:center}
+.setup-box h2{font-size:20px;margin-bottom:8px}
+.setup-box p{color:var(--text-secondary);font-size:14px;margin-bottom:20px;line-height:1.6}
+.setup-box input{width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;outline:none;font-family:monospace;margin-bottom:16px}
+.setup-box input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-light)}
+.setup-box .hint{font-size:12px;color:var(--text-muted);margin-bottom:16px;text-align:left}.setup-box .hint a{color:var(--accent)}
+.settings-btn{position:fixed;bottom:16px;right:16px;width:36px;height:36px;border-radius:50%;border:1px solid var(--border);background:var(--surface);cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:200;opacity:.5;transition:opacity .2s;box-shadow:var(--shadow-sm)}
+.settings-btn:hover{opacity:1}
 /* ===== Responsive ===== */
 @media (max-width: 768px) {
   .sidebar { width: 100%; position: absolute; left: -100%; transition: left .3s; z-index: 10; height: 100%; }
@@ -473,6 +488,8 @@ body {
 </style>
 </head>
 <body>
+
+<div class="status-bar" id="statusBar" style="opacity:0"><span class="status-dot synced" id="statusDot"></span><span id="statusText">已同步</span></div>
 
 <!-- Top Bar -->
 <header class="topbar">
@@ -518,554 +535,171 @@ body {
 <!-- Preview Modal -->
 <div id="previewModal" class="modal-overlay" style="display:none;" onclick="closeModal(event)"></div>
 
+<!-- Token Setup -->
+<div class="setup-overlay" id="setupOverlay"><div class="setup-box"><h2>🔐 首次设置</h2><p>输入 GitHub Token 以启用云端同步。<br>手机和电脑输入同一个 Token，数据即可互通。</p><input type="password" id="tokenInput" placeholder="ghp_xxxxxxxxxxxx"><div class="hint">没有 Token？<a href="https://github.com/settings/tokens/new" target="_blank">点此创建</a><br>勾选 <b>repo</b> 权限，生成后粘贴到上方</div><button class="btn primary" onclick="saveSetup()" style="width:100%;justify-content:center">保存并开始使用</button></div></div>
+
+<button class="settings-btn" onclick="showSettings()" title="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+
 <script>
-/* ===== IndexedDB Layer ===== */
-const DB_NAME = 'ExpJournal', DB_VER = 1;
-let db;
 
-function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VER);
-    req.onupgradeneeded = e => {
-      const d = e.target.result;
-      if (!d.objectStoreNames.contains('experiments')) {
-        const exp = d.createObjectStore('experiments', { keyPath: 'id', autoIncrement: true });
-        exp.createIndex('updatedAt', 'updatedAt');
-      }
-      if (!d.objectStoreNames.contains('attachments')) {
-        const att = d.createObjectStore('attachments', { keyPath: 'id', autoIncrement: true });
-        att.createIndex('experimentId', 'experimentId');
-      }
+/* ===== GitHub Sync Engine ===== */
+const REPO='L1Show/experiment-journal',BRANCH='main',DATA_FILE='data/experiments.json';
+function getToken(){return localStorage.getItem('gh_token')||''}
+function setToken(t){localStorage.setItem('gh_token',t)}
+function toB64(s){return btoa(unescape(encodeURIComponent(s)))}
+
+async function fetchData(){
+  var r=await fetch('https://raw.githubusercontent.com/'+REPO+'/'+BRANCH+'/'+DATA_FILE,{cache:'no-store'});
+  if(r.status===404)return{experiments:[],attachments:[],next_exp_id:1,next_att_id:1};
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  return await r.json();
+}
+
+async function getFileInfo(path){
+  var t=getToken();
+  var r=await fetch('https://api.github.com/repos/'+REPO+'/contents/'+encodeURIComponent(path),{headers:{Authorization:'token '+t,'Cache-Control':'no-cache'}});
+  if(r.status===404)return null;
+  if(!r.ok)throw new Error('API '+r.status);
+  return await r.json();
+}
+
+async function saveData(d,msg){
+  var t=getToken();if(!t)throw new Error('Token missing');
+  var json=JSON.stringify(d,null,2),enc=toB64(json);
+  var sha=null;try{var info=await getFileInfo(DATA_FILE);if(info)sha=info.sha}catch(e){}
+  var body={message:msg||'Update',content:enc,branch:BRANCH};if(sha)body.sha=sha;
+  var r=await fetch('https://api.github.com/repos/'+REPO+'/contents/'+DATA_FILE,{method:'PUT',headers:{Authorization:'token '+t,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){var e=await r.json().catch(function(){return{}});if(e.message&&e.message.indexOf('sha')>=0)throw new Error('CONFLICT');throw new Error(e.message||r.status)}
+  return await r.json();
+}
+
+async function uploadGitHubFile(path,blob,msg){
+  var t=getToken();
+  return new Promise(function(resolve,reject){
+    var reader=new FileReader();
+    reader.onload=async function(){
+      var b64=reader.result.split(',')[1],body={message:msg,content:b64,branch:BRANCH};
+      var sha=null;try{var info=await getFileInfo(path);if(info)sha=info.sha}catch(e){};if(sha)body.sha=sha;
+      var r=await fetch('https://api.github.com/repos/'+REPO+'/contents/'+encodeURIComponent(path),{method:'PUT',headers:{Authorization:'token '+t,'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(!r.ok){var e=await r.json().catch(function(){return{}});reject(new Error(e.message||'Upload '+r.status))}else resolve(await r.json());
     };
-    req.onsuccess = e => { db = e.target.result; resolve(db); };
-    req.onerror = () => reject(req.error);
+    reader.onerror=function(){reject(new Error('read error'))};reader.readAsDataURL(blob);
   });
 }
 
-function tx(store, mode = 'readonly') {
-  return db.transaction(store, mode).objectStore(store);
+async function deleteGitHubFile(path,msg){
+  var t=getToken(),info=await getFileInfo(path);if(!info)return;
+  var r=await fetch('https://api.github.com/repos/'+REPO+'/contents/'+encodeURIComponent(path),{method:'DELETE',headers:{Authorization:'token '+t,'Content-Type':'application/json'},body:JSON.stringify({message:msg,sha:info.sha,branch:BRANCH})});
+  if(!r.ok)throw new Error('Delete '+r.status);
 }
 
-function promisify(request) {
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-// Wait for BOTH the request and the transaction to complete
-// This fixes the classic IndexedDB bug where data isn't visible after "save"
-function txDone(store) {
-  return new Promise((resolve, reject) => {
-    const t = store.transaction;
-    t.oncomplete = resolve;
-    t.onerror = () => reject(t.error);
-    t.onabort = () => reject(t.error || new Error('Transaction aborted'));
-  });
-}
-async function txCommit(store, op) {
-  const result = await promisify(op(store));
-  await txDone(store);
-  return result;
-}
-
-/* ===== Experiment CRUD ===== */
-async function getAllExperiments() {
-  return promisify(tx('experiments').getAll());
-}
-
-async function getExperiment(id) {
-  return promisify(tx('experiments').get(id));
-}
-
-async function saveExperiment(exp) {
-  const now = Date.now();
-  if (!exp.createdAt) exp.createdAt = now;
-  exp.updatedAt = now;
-  return txCommit(tx('experiments', 'readwrite'), s => s.put(exp));
-}
-
-async function deleteExperiment(id) {
-  const atts = await getAttachments(id);
-  if (atts.length) {
-    const s = tx('attachments', 'readwrite');
-    for (const a of atts) s.delete(a.id);
-    await txDone(s);
-  }
-  await txCommit(tx('experiments', 'readwrite'), s => s.delete(id));
-  // Verify deletion succeeded
-  const check = await promisify(tx('experiments').get(id));
-  if (check) throw new Error('记录删除验证失败');
-}
-
-/* ===== Attachment CRUD ===== */
-async function getAttachments(experimentId) {
-  const index = tx('attachments').index('experimentId');
-  return promisify(index.getAll(experimentId));
-}
-
-// Blob URL memory management
-const _blobUrls = new Set();
-function createBlobUrl(blob) {
-  const url = URL.createObjectURL(blob);
-  _blobUrls.add(url);
-  return url;
-}
-function revokeAllBlobUrls() {
-  _blobUrls.forEach(url => URL.revokeObjectURL(url));
-  _blobUrls.clear();
-}
-
-async function saveAttachment(att) {
-  att.uploadedAt = Date.now();
-  return txCommit(tx('attachments', 'readwrite'), s => s.put(att));
-}
-
-async function deleteAttachment(id) {
-  return txCommit(tx('attachments', 'readwrite'), s => s.delete(id));
-}
-
-async function getAttachment(id) {
-  return promisify(tx('attachments').get(id));
-}
+function fileUrl(p){return'https://raw.githubusercontent.com/'+REPO+'/'+BRANCH+'/'+p}
 
 /* ===== State ===== */
-let experiments = [];
-let selectedId = null;
-let currentFilter = '全部';
-let _renderingId = 0;  // Guard against race conditions
+var data={experiments:[],attachments:[],next_exp_id:1,next_att_id:1};
+var selectedId=null;
+var currentFilter='全部';
+var _syncTimer=null;
+
+/* ===== UI Helpers ===== */
+function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+function escAttr(s){return(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function setStatus(text,syncing){var b=document.getElementById('statusBar'),d=document.getElementById('statusDot'),x=document.getElementById('statusText');b.style.opacity='1';d.className='status-dot '+(syncing?'syncing':'synced');x.textContent=text;clearTimeout(_syncTimer);_syncTimer=setTimeout(function(){b.style.opacity='0'},3000)}
+
+/* ===== Data Operations ===== */
+async function loadData(){
+  setStatus('同步中…',true);
+  try{data=await fetchData();setStatus('已同步',false);renderAll()}catch(e){console.error(e);setStatus('加载失败',false);document.getElementById('expList').innerHTML='<div style="text-align:center;padding:40px;color:var(--danger)">⚠️ 数据加载失败<br><small>请检查网络或Token</small></div>'}
+}
+
+async function saveAllData(msg){
+  setStatus('保存中…',true);
+  try{await saveData(data,msg);setStatus('已同步',false)}catch(e){
+    if(e.message==='CONFLICT'){setStatus('冲突刷新中…',true);await loadData();setStatus('请重试',false);showToast('⚠ 数据已刷新，请重新操作')}
+    else{setStatus(e.message,false);showToast('❌ 保存失败')}
+  }
+  renderAll();
+}
 
 /* ===== Render ===== */
-async function refresh() {
-  experiments = await getAllExperiments();
-  experiments.sort((a, b) => b.updatedAt - a.updatedAt);
-  renderSidebar();
-  if (selectedId) {
-    const exp = experiments.find(e => e.id === selectedId);
-    if (exp) renderDetail(exp);
-    else { selectedId = null; renderDetail(null); }
-  }
+function renderAll(){
+  var exps=data.experiments.sort(function(a,b){return b.updated_at-a.updated_at});renderSidebar(exps);
+  if(selectedId){var e=exps.find(function(x){return x.id===selectedId});if(e)renderDetail(e);else{selectedId=null;renderDetail(null)}}
 }
 
-function renderSidebar() {
-  const list = document.getElementById('expList');
-  const countEl = document.getElementById('expCount');
-  const tagFilter = document.getElementById('tagFilter');
-
-  // Collect tags
-  const tags = new Set();
-  experiments.forEach(e => { if (e.category) tags.add(e.category); });
-
-  // Filter
-  const search = (document.getElementById('searchInput').value || '').toLowerCase();
-  let filtered = experiments;
-  if (currentFilter !== '全部') {
-    filtered = filtered.filter(e => e.category === currentFilter);
-  }
-  if (search) {
-    filtered = filtered.filter(e =>
-      (e.title || '').toLowerCase().includes(search) ||
-      (e.category || '').toLowerCase().includes(search) ||
-      (e.objective || '').toLowerCase().includes(search)
-    );
-  }
-
-  // Tag chips
-  const tagArr = ['全部', ...tags];
-  tagFilter.innerHTML = tagArr.map(t =>
-    `<span class="tag-chip${t === currentFilter ? ' active' : ''}" onclick="filterByTag('${t.replace(/'/g, "\\'")}')">${t}</span>`
-  ).join('');
-
-  countEl.textContent = `${experiments.length} 条记录`;
-
-  if (filtered.length === 0) {
-    list.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted);font-size:13px;">暂无实验记录</div>';
-    return;
-  }
-
-  list.innerHTML = filtered.map(e => {
-    const d = new Date(e.date || e.createdAt);
-    const dateStr = isNaN(d) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-    return `
-      <div class="exp-card${e.id === selectedId ? ' selected' : ''}" onclick="selectExp(${e.id})">
-        <div class="card-title">${esc(e.title || '未命名实验')}</div>
-        <div class="card-meta">
-          <span>${dateStr}</span>
-        </div>
-        ${e.category ? `<span class="card-tag">${esc(e.category)}</span>` : ''}
-      </div>`;
-  }).join('');
+function renderSidebar(exps){
+  var l=document.getElementById('expList'),c=document.getElementById('expCount'),f=document.getElementById('tagFilter'),tags=new Set();exps.forEach(function(e){if(e.category)tags.add(e.category)});
+  var s=(document.getElementById('searchInput').value||'').toLowerCase();var fl=exps;if(currentFilter!=='全部')fl=fl.filter(function(e){return e.category===currentFilter});
+  if(s)fl=fl.filter(function(e){return(e.title||'').toLowerCase().indexOf(s)>=0||(e.category||'').toLowerCase().indexOf(s)>=0||(e.objective||'').toLowerCase().indexOf(s)>=0});
+  f.innerHTML=['全部'].concat(Array.from(tags)).map(function(t){return'<span class="tag-chip'+(t===currentFilter?' active':'')+'" onclick="filterByTag(\''+t.replace(/'/g,"\\'")+'\')">'+t+'</span>'}).join('');
+  c.textContent=exps.length+' 条记录';
+  if(!fl.length){l.innerHTML='<div style="text-align:center;padding:30px;color:var(--text-muted);font-size:13px">暂无实验记录</div>';return}
+  l.innerHTML=fl.map(function(e){var d=new Date(e.date||e.created_at),ds=isNaN(d)?'':d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'),ac=data.attachments.filter(function(a){return a.experiment_id===e.id}).length;return'<div class="exp-card'+(e.id===selectedId?' selected':'')+'" onclick="selectExp('+e.id+')"><div class="card-title">'+esc(e.title||'未命名实验')+'</div><div class="card-meta"><span>'+ds+'</span>'+(ac?'<span>📎'+ac+'</span>':'')+'</div>'+(e.category?'<span class="card-tag">'+esc(e.category)+'</span>':'')+'</div>'}).join('');
 }
 
-function esc(s) {
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
+async function selectExp(id){selectedId=id;var e=data.experiments.find(function(x){return x.id===id});if(e)renderDetail(e);else renderDetail(null);renderSidebar(data.experiments.sort(function(a,b){return b.updated_at-a.updated_at}))}
+
+function renderDetail(exp){
+  var em=document.getElementById('emptyState'),pn=document.getElementById('detailPanel');if(!exp){em.style.display='flex';pn.style.display='none';return}
+  em.style.display='none';pn.style.display='block';
+  var atts=data.attachments.filter(function(a){return a.experiment_id===exp.id}),d=exp.date?new Date(exp.date):new Date(exp.created_at),dv=isNaN(d)?'':d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  pn.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px"><h2 style="font-size:22px;font-weight:700">实验详情</h2><div class="form-actions" style="padding:0"><button class="btn primary" onclick="saveCurrent()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>保存</button><button class="btn danger" onclick="deleteCurrent()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>删除</button></div></div><div class="form-row"><div class="form-group"><label>实验标题</label><input type="text" id="fTitle" value="'+escAttr(exp.title||'')+'" placeholder="例如：溶胶-凝胶法合成TiO₂纳米颗粒"></div><div class="form-group"><label>实验日期</label><input type="date" id="fDate" value="'+dv+'"></div></div><div class="form-group"><label>实验分类</label><input type="text" id="fCategory" value="'+escAttr(exp.category||'')+'" placeholder="例如：合成、XRD表征、EIS测试、SEM…"></div><div class="form-group"><label>实验目的</label><textarea id="fObjective" rows="2" placeholder="描述本次实验的目标…">'+esc(exp.objective||'')+'</textarea></div><div class="form-group"><label>实验流程与条件</label><textarea id="fProcess" rows="6" placeholder="记录实验步骤、反应条件（温度、时间、配比等）…">'+esc(exp.process||'')+'</textarea></div><div class="form-group"><label>实验结果与数据</label><textarea id="fResults" rows="5" placeholder="记录实验结果、XRD图谱分析、EIS数据、SEM观察等…">'+esc(exp.results||'')+'</textarea></div><div class="form-group"><label>结论与备注</label><textarea id="fConclusion" rows="3" placeholder="实验结论、改进方向、注意事项…">'+esc(exp.conclusion||'')+'</textarea></div><div class="attachments-section"><h3 style="font-size:14px;font-weight:600;margin-bottom:12px">📎 附件文件</h3><div class="drop-zone" id="dropZone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><p>拖拽文件到此处，或 <span>点击上传</span></p><input type="file" id="fileInput" multiple style="display:none" onchange="handleFiles(this.files)"></div><div class="file-grid" id="fileGrid">'+renderFileCards(atts)+'</div></div>';
+  var dz=document.getElementById('dropZone'),fi=document.getElementById('fileInput');dz.addEventListener('click',function(){fi.click()});dz.addEventListener('dragover',function(e){e.preventDefault();dz.classList.add('dragover')});dz.addEventListener('dragleave',function(){dz.classList.remove('dragover')});dz.addEventListener('drop',function(e){e.preventDefault();dz.classList.remove('dragover');handleFiles(e.dataTransfer.files)});
 }
 
-async function selectExp(id) {
-  selectedId = id;
-  const exp = experiments.find(e => e.id === id);
-  const rid = ++_renderingId;
-  if (exp) {
-    await renderDetail(exp, rid);
-    // Only update sidebar if this is still the latest render
-    if (rid === _renderingId) renderSidebar();
-  } else {
-    renderDetail(null);
-  }
+function renderFileCards(atts){
+  if(!atts.length)return'<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--text-muted);font-size:13px">暂无附件</div>';
+  return atts.map(function(a){var isImg=a.type&&a.type.indexOf('image/')===0,sz=a.size>1048576?(a.size/1048576).toFixed(1)+' MB':(a.size/1024).toFixed(0)+' KB',u=a.path?fileUrl(a.path):'#';return'<div class="file-card" onclick="previewAtt('+a.id+')"><div class="file-icon-wrap">'+(isImg?'<img src="'+u+'" alt="'+esc(a.name)+'" loading="lazy">':'<span class="file-type-icon">'+fi(a.type)+'</span>')+'</div><div class="file-name" title="'+esc(a.name)+'">'+esc(a.name)+'</div><div class="file-size">'+sz+'</div><div class="file-actions" onclick="event.stopPropagation()"><button onclick="previewAtt('+a.id+')">预览</button><button onclick="downloadAtt('+a.id+')">下载</button><button class="del-btn" onclick="removeAttachment('+a.id+')">删除</button></div></div>'}).join('');
 }
 
-async function renderDetail(exp, rid) {
-  const empty = document.getElementById('emptyState');
-  const panel = document.getElementById('detailPanel');
-
-  if (!exp) {
-    empty.style.display = 'flex';
-    panel.style.display = 'none';
-    return;
-  }
-
-  empty.style.display = 'none';
-  panel.style.display = 'block';
-
-  revokeAllBlobUrls();
-  const attachments = await getAttachments(exp.id);
-  if (rid && rid !== _renderingId) return; // Abort stale render
-  const d = exp.date ? new Date(exp.date) : new Date(exp.createdAt);
-  const dateVal = isNaN(d) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-
-  panel.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
-      <h2 style="font-size:22px;font-weight:700;">实验详情</h2>
-      <div class="form-actions" style="padding:0;">
-        <button class="btn primary" onclick="saveCurrent()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-          保存
-        </button>
-        <button class="btn danger" onclick="deleteCurrent()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-          删除
-        </button>
-      </div>
-    </div>
-
-    <div class="form-row">
-      <div class="form-group">
-        <label>实验标题</label>
-        <input type="text" id="fTitle" value="${escAttr(exp.title || '')}" placeholder="例如：溶胶-凝胶法合成TiO₂纳米颗粒">
-      </div>
-      <div class="form-group">
-        <label>实验日期</label>
-        <input type="date" id="fDate" value="${dateVal}">
-      </div>
-    </div>
-
-    <div class="form-group">
-      <label>实验分类</label>
-      <input type="text" id="fCategory" value="${escAttr(exp.category || '')}" placeholder="例如：合成、XRD表征、EIS测试、SEM…">
-    </div>
-
-    <div class="form-group">
-      <label>实验目的</label>
-      <textarea id="fObjective" rows="2" placeholder="描述本次实验的目标…">${esc(exp.objective || '')}</textarea>
-    </div>
-
-    <div class="form-group">
-      <label>实验流程与条件</label>
-      <textarea id="fProcess" rows="6" placeholder="记录实验步骤、反应条件（温度、时间、配比等）…">${esc(exp.process || '')}</textarea>
-    </div>
-
-    <div class="form-group">
-      <label>实验结果与数据</label>
-      <textarea id="fResults" rows="5" placeholder="记录实验结果、XRD图谱分析、EIS数据、SEM观察等…">${esc(exp.results || '')}</textarea>
-    </div>
-
-    <div class="form-group">
-      <label>结论与备注</label>
-      <textarea id="fConclusion" rows="3" placeholder="实验结论、改进方向、注意事项…">${esc(exp.conclusion || '')}</textarea>
-    </div>
-
-    <!-- Attachments -->
-    <div class="attachments-section">
-      <h3 style="font-size:14px;font-weight:600;margin-bottom:12px;">📎 附件文件</h3>
-      <div class="drop-zone" id="dropZone">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        <p>拖拽文件到此处，或 <span>点击上传</span></p>
-        <input type="file" id="fileInput" multiple style="display:none;" onchange="handleFiles(this.files)">
-      </div>
-      <div class="file-grid" id="fileGrid">
-        ${renderFileCards(attachments)}
-      </div>
-    </div>
-  `;
-
-  // File upload bindings
-  const dropZone = document.getElementById('dropZone');
-  const fileInput = document.getElementById('fileInput');
-
-  dropZone.addEventListener('click', () => fileInput.click());
-  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-  dropZone.addEventListener('drop', e => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
-    handleFiles(e.dataTransfer.files);
-  });
-}
-
-function escAttr(s) { return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-function renderFileCards(attachments) {
-  if (!attachments.length) return '<div style="grid-column:1/-1;text-align:center;padding:16px;color:var(--text-muted);font-size:13px;">暂无附件，拖拽文件到上方区域上传</div>';
-  return attachments.map(a => {
-    const isImage = a.type && a.type.startsWith('image/');
-    const sizeStr = a.size > 1024*1024 ? `${(a.size/(1024*1024)).toFixed(1)} MB` : `${(a.size/1024).toFixed(0)} KB`;
-    return `
-      <div class="file-card" onclick="previewFile(${a.id})">
-        <div class="file-icon-wrap">
-          ${isImage
-            ? `<img src="${createBlobUrl(a.data)}" alt="${esc(a.name)}" loading="lazy">`
-            : `<span class="file-type-icon">${fileIcon(a.type)}</span>`
-          }
-        </div>
-        <div class="file-name" title="${esc(a.name)}">${esc(a.name)}</div>
-        <div class="file-size">${sizeStr}</div>
-        <div class="file-actions" onclick="event.stopPropagation()">
-          <button onclick="previewFile(${a.id})">预览</button>
-          <button onclick="downloadFile(${a.id})">下载</button>
-          <button class="del-btn" onclick="removeAttachment(${a.id})">删除</button>
-        </div>
-      </div>`;
-  }).join('');
-}
-
-function fileIcon(type) {
-  if (!type) return '📄';
-  if (type.includes('pdf')) return '📑';
-  if (type.includes('text') || type.includes('json') || type.includes('xml')) return '📝';
-  if (type.includes('video')) return '🎬';
-  if (type.includes('audio')) return '🎵';
-  if (type.includes('zip') || type.includes('rar') || type.includes('tar')) return '📦';
-  return '📄';
-}
+function fi(t){if(!t)return'📄';if(t.indexOf('pdf')>=0)return'📑';if(t.indexOf('text')>=0||t.indexOf('json')>=0||t.indexOf('xml')>=0)return'📝';if(t.indexOf('video')>=0)return'🎬';if(t.indexOf('audio')>=0)return'🎵';return'📄'}
 
 /* ===== Actions ===== */
-async function createNew() {
-  const exp = {
-    title: '',
-    date: new Date().toISOString().split('T')[0],
-    category: '',
-    objective: '',
-    process: '',
-    results: '',
-    conclusion: '',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  };
-  const id = await saveExperiment(exp);
-  selectedId = id;
-  await refresh();
+async function createNew(){var id=data.next_exp_id++;data.experiments.push({id:id,title:'',date:new Date().toISOString().split('T')[0],category:'',objective:'',process:'',results:'',conclusion:'',created_at:Date.now(),updated_at:Date.now()});selectedId=id;await saveAllData('新建实验')}
+
+async function saveCurrent(){
+  if(!selectedId)return;var exp=data.experiments.find(function(e){return e.id===selectedId});if(!exp)return;
+  exp.title=document.getElementById('fTitle').value.trim();exp.date=document.getElementById('fDate').value;exp.category=document.getElementById('fCategory').value.trim();exp.objective=document.getElementById('fObjective').value.trim();exp.process=document.getElementById('fProcess').value.trim();exp.results=document.getElementById('fResults').value.trim();exp.conclusion=document.getElementById('fConclusion').value.trim();exp.updated_at=Date.now();await saveAllData('更新实验');showToast('✅ 保存成功');
 }
 
-async function saveCurrent() {
-  if (!selectedId) return;
-  const title = document.getElementById('fTitle').value.trim();
-  const date = document.getElementById('fDate').value;
-  const category = document.getElementById('fCategory').value.trim();
-  const objective = document.getElementById('fObjective').value.trim();
-  const process = document.getElementById('fProcess').value.trim();
-  const results = document.getElementById('fResults').value.trim();
-  const conclusion = document.getElementById('fConclusion').value.trim();
-
-  const exp = await getExperiment(selectedId);
-  exp.title = title;
-  exp.date = date;
-  exp.category = category;
-  exp.objective = objective;
-  exp.process = process;
-  exp.results = results;
-  exp.conclusion = conclusion;
-
-  await saveExperiment(exp);
-  await refresh();
-  showToast('✅ 保存成功');
+async function deleteCurrent(){
+  if(!selectedId)return;if(!confirm('确定删除该实验及其所有附件吗？此操作不可撤销。'))return;setStatus('删除中…',true);
+  try{
+    var fresh=await fetchData(),targets=(fresh.attachments||[]).filter(function(a){return a.experiment_id===selectedId});
+    for(var i=0;i<targets.length;i++){try{await deleteGitHubFile(targets[i].path,'删除附件')}catch(e){}}
+    fresh.attachments=fresh.attachments.filter(function(a){return a.experiment_id!==selectedId});fresh.experiments=fresh.experiments.filter(function(e){return e.id!==selectedId});
+    for(var attempt=0;attempt<3;attempt++){try{await saveData(fresh,'删除实验');break}catch(e){if(e.message==='CONFLICT'&&attempt<2){var rf=await fetchData();rf.attachments=rf.attachments.filter(function(a){return a.experiment_id!==selectedId});rf.experiments=rf.experiments.filter(function(e){return e.id!==selectedId});fresh=rf}else throw e}}
+    data=fresh;selectedId=null;renderAll();renderDetail(null);setStatus('已同步',false);showToast('✅ 已删除');
+  }catch(e){console.error(e);setStatus('删除失败',false);showToast('❌ 删除失败，请刷新重试')}
 }
 
-async function deleteCurrent() {
-  if (!selectedId) return;
-  if (!confirm('确定要删除该实验及其所有附件吗？此操作不可撤销。')) return;
-  try {
-    await deleteExperiment(selectedId);
-    selectedId = null;
-    await refresh();
-    renderDetail(null);
-    showToast('✅ 已删除');
-  } catch (err) {
-    console.error('Delete error:', err);
-    showToast('❌ 删除失败，请刷新页面后重试');
-  }
-}
+async function handleFiles(files){if(!selectedId){showToast('请先选择或创建实验');return}if(!files.length)return;setStatus('上传中…',true);for(var i=0;i<files.length;i++){var f=files[i],aid=data.next_att_id++,path='data/files/'+aid+'_'+f.name;try{await uploadGitHubFile(path,f,'上传: '+f.name);data.attachments.push({id:aid,experiment_id:selectedId,name:f.name,type:f.type,size:f.size,path:path,uploaded_at:Date.now()})}catch(e){showToast('❌ '+f.name+' 上传失败')}}await saveAllData('上传附件');refreshAtts();showToast('✅ 已上传 '+files.length+' 个文件')}
 
-async function handleFiles(files) {
-  if (!selectedId) { showToast('请先选择或创建一个实验'); return; }
-  if (!files.length) return;
+async function refreshAtts(){if(!selectedId)return;var g=document.getElementById('fileGrid');if(g)g.innerHTML=renderFileCards(data.attachments.filter(function(x){return x.experiment_id===selectedId}))}
 
-  for (const file of files) {
-    const reader = new FileReader();
-    await new Promise(resolve => {
-      reader.onload = async () => {
-        await saveAttachment({
-          experimentId: selectedId,
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          data: new Blob([reader.result], { type: file.type })
-        });
-        resolve();
-      };
-      reader.readAsArrayBuffer(file);
-    });
-  }
-  await refreshAttachments();
-  showToast(`✅ 已上传 ${files.length} 个文件`);
-}
+async function removeAttachment(id){if(!confirm('确定删除该附件吗？'))return;var a=data.attachments.find(function(x){return x.id===id});if(a){try{await deleteGitHubFile(a.path,'删除附件')}catch(e){}data.attachments=data.attachments.filter(function(x){return x.id!==id})}await saveAllData('删除附件');refreshAtts();showToast('附件已删除')}
 
-async function refreshAttachments() {
-  if (!selectedId) return;
-  const attachments = await getAttachments(selectedId);
-  const grid = document.getElementById('fileGrid');
-  if (grid) {
-    revokeAllBlobUrls();
-    grid.innerHTML = renderFileCards(attachments);
-  }
-}
+async function previewAtt(id){var a=data.attachments.find(function(x){return x.id===id});if(!a)return;var u=fileUrl(a.path),t=a.type||'',ov=document.getElementById('previewModal'),b='';if(t.indexOf('image/')===0)b='<img src="'+u+'" alt="'+esc(a.name)+'">';else if(t.indexOf('video/')===0)b='<video src="'+u+'" controls autoplay></video>';else if(t.indexOf('audio/')===0)b='<audio src="'+u+'" controls autoplay></audio>';else if(t==='application/pdf')b='<iframe src="'+u+'#toolbar=1&navpanes=1" style="width:85vw;height:85vh"></iframe>';else if(t.indexOf('text/')===0||isCode(a.name)){try{var r=await fetch(u);b='<pre>'+esc((await r.text()).slice(0,500000))+'</pre>'}catch(e){b='<div class="file-info"><p>无法加载</p></div>'}}else b='<div class="file-info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p style="font-size:16px;font-weight:500">'+esc(a.name)+'</p><p style="font-size:13px">'+(a.size/1024).toFixed(1)+' KB — 暂不支持预览</p><a href="'+u+'" download="'+esc(a.name)+'" class="download-btn">⬇ 下载文件</a></div>';ov.innerHTML='<div class="modal" onclick="event.stopPropagation()"><div class="modal-header"><h3>'+esc(a.name)+'</h3><button onclick="closeModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div><div class="modal-body">'+b+'</div></div>';ov.style.display='flex'}
 
-async function removeAttachment(id) {
-  if (!confirm('确定删除该附件吗？')) return;
-  await deleteAttachment(id);
-  await refreshAttachments();
-  showToast('附件已删除');
-}
+function downloadAtt(id){var a=data.attachments.find(function(x){return x.id===id});if(a)window.open(fileUrl(a.path),'_blank')}
+function closeModal(e){if(e&&e.target!==document.getElementById('previewModal'))return;document.getElementById('previewModal').style.display='none'}
+function isCode(n){return['txt','md','json','csv','xml','html','css','js','ts','py','yaml','yml','log','cfg','ini','sh','bat'].indexOf((n||'').split('.').pop().toLowerCase())>=0}
+function filterByTag(t){currentFilter=t;selectedId=null;renderDetail(null);renderSidebar(data.experiments.sort(function(a,b){return b.updated_at-a.updated_at}))}
 
-async function previewFile(id) {
-  const att = await getAttachment(id);
-  if (!att) return;
-  const blob = att.data;
-  const url = createBlobUrl(blob);
-  const type = att.type || '';
+function showToast(msg){var t=document.createElement('div');t.textContent=msg;Object.assign(t.style,{position:'fixed',bottom:'24px',left:'50%',transform:'translateX(-50%)',background:'#1a1a1a',color:'#fff',padding:'10px 24px',borderRadius:'20px',fontSize:'14px',zIndex:'9999',pointerEvents:'none',animation:'slideUp .3s',boxShadow:'0 4px 20px rgba(0,0,0,.2)'});document.body.appendChild(t);setTimeout(function(){t.style.opacity='0';t.style.transition='opacity .3s';setTimeout(function(){t.remove()},300)},2000)}
 
-  const overlay = document.getElementById('previewModal');
-  const title = att.name;
+/* ===== Setup ===== */
+async function saveSetup(){var t=document.getElementById('tokenInput').value.trim();if(!t){showToast('请输入Token');return}setToken(t);var btn=document.querySelector('.setup-box .btn');btn.textContent='正在同步…';btn.disabled=true;try{await loadData();document.getElementById('setupOverlay').style.display='none';showToast('✅ 连接成功！')}catch(e){document.getElementById('setupOverlay').style.display='flex';btn.textContent='保存并开始使用';btn.disabled=false;showToast('❌ '+e.message)}}
 
-  let bodyHTML = '';
-  if (type.startsWith('image/')) {
-    bodyHTML = `<img src="${url}" alt="${esc(title)}">`;
-  } else if (type.startsWith('video/')) {
-    bodyHTML = `<video src="${url}" controls autoplay></video>`;
-  } else if (type.startsWith('audio/')) {
-    bodyHTML = `<audio src="${url}" controls autoplay></audio>`;
-  } else if (type === 'application/pdf') {
-    bodyHTML = `<iframe src="${url}#toolbar=1&navpanes=1" style="width:85vw;height:85vh;"></iframe>`;
-  } else if (type.startsWith('text/') || isCodeFile(att.name)) {
-    const text = await blob.text();
-    bodyHTML = `<pre>${esc(text.slice(0, 500000))}</pre>`;
-  } else {
-    bodyHTML = `
-      <div class="file-info">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-        <p style="font-size:16px;font-weight:500;">${esc(title)}</p>
-        <p style="font-size:13px;">${(att.size/1024).toFixed(1)} KB — 该格式暂不支持在线预览</p>
-        <a href="${url}" download="${esc(title)}" class="download-btn">⬇ 下载文件</a>
-      </div>`;
-  }
+function showSettings(){document.getElementById('tokenInput').value=getToken();document.getElementById('setupOverlay').style.display='flex'}
 
-  overlay.innerHTML = `
-    <div class="modal" onclick="event.stopPropagation()">
-      <div class="modal-header">
-        <h3>${esc(title)}</h3>
-        <button onclick="closeModal()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18"><path d="M18 6 6 18M6 6l12 12"/></svg>
-        </button>
-      </div>
-      <div class="modal-body">${bodyHTML}</div>
-    </div>`;
-  overlay.style.display = 'flex';
-}
+/* ===== Event Bindings ===== */
+document.getElementById('searchInput').addEventListener('input',function(){renderSidebar(data.experiments.sort(function(a,b){return b.updated_at-a.updated_at}))});
+document.addEventListener('keydown',function(e){if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();if(selectedId)saveCurrent()}if(e.key==='Escape'){var m=document.getElementById('previewModal');if(m.style.display==='flex')m.style.display='none';var s=document.getElementById('setupOverlay');if(s.style.display==='flex'&&getToken())s.style.display='none'}});
 
-function closeModal(e) {
-  if (e && e.target !== document.getElementById('previewModal')) return;
-  document.getElementById('previewModal').style.display = 'none';
-}
+/* ===== Init ===== */
+if(getToken()){document.getElementById('setupOverlay').style.display='none';loadData()}else document.getElementById('setupOverlay').style.display='flex';
 
-function isCodeFile(name) {
-  const ext = (name || '').split('.').pop().toLowerCase();
-  return ['txt','md','json','csv','xml','html','css','js','ts','py','yaml','yml','log','cfg','ini','sh','bat'].includes(ext);
-}
-
-async function downloadFile(id) {
-  const att = await getAttachment(id);
-  if (!att) return;
-  const url = createBlobUrl(att.data);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = att.name;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
-
-function filterByTag(tag) {
-  currentFilter = tag;
-  selectedId = null;
-  renderDetail(null);
-  renderSidebar();
-}
-
-function showToast(msg) {
-  const toast = document.createElement('div');
-  toast.textContent = msg;
-  Object.assign(toast.style, {
-    position: 'fixed', bottom: '24px', left: '50%', transform: 'translateX(-50%)',
-    background: '#1a1a1a', color: '#fff', padding: '10px 24px', borderRadius: '20px',
-    fontSize: '14px', zIndex: '9999', pointerEvents: 'none',
-    animation: 'slideUp .3s', boxShadow: '0 4px 20px rgba(0,0,0,.2)'
-  });
-  document.body.appendChild(toast);
-  setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transition = 'opacity .3s';
-    setTimeout(() => toast.remove(), 300);
-  }, 2000);
-}
-
-// Search binding
-document.getElementById('searchInput').addEventListener('input', () => {
-  renderSidebar();
-});
-
-// Keyboard shortcuts
-document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-    e.preventDefault();
-    if (selectedId) saveCurrent();
-  }
-  if (e.key === 'Escape') {
-    const modal = document.getElementById('previewModal');
-    if (modal.style.display === 'flex') {
-      modal.style.display = 'none';
-    }
-  }
-});
-
-// Init
-openDB().then(() => {
-  refresh();
-}).catch(err => {
-  console.error('数据库初始化失败:', err);
-  document.getElementById('expList').innerHTML =
-    '<div style="text-align:center;padding:40px;color:var(--danger);">⚠️ 数据库初始化失败，请检查浏览器是否支持 IndexedDB（无痕模式可能禁用）</div>';
-});
 </script>
 </body>
 </html>
